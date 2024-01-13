@@ -3,4 +3,4 @@
 We will update the code ASAP.
 
 
-![schematic](figures/framework.pdf)
+![schematic](figures/framework.jpg)
