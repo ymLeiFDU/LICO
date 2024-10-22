@@ -6,7 +6,6 @@ import os
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from torch.cuda.amp import GradScaler, autocast
 
 from clip import clip
 from clip.simple_tokenizer import SimpleTokenizer as _Tokenizer
@@ -21,7 +20,7 @@ _tokenizer = _Tokenizer()
 def load_clip_to_cpu():
     backbone_name = "ViT-B/32"
     url = clip._MODELS[backbone_name]
-    model_path = clip._download(url, root = os.path.expanduser("/home/ymlei/.cache/clip"))
+    model_path = clip._download(url, root = os.path.expanduser("/.cache/clip"))
 
     try:
         # loading JIT archive
@@ -76,6 +75,8 @@ class TextEncoder(nn.Module):
         x = x[torch.arange(x.shape[0]), tokenized_prompts.argmax(dim=-1)] @ self.text_projection
         return x
 
+
+
 class PromptLearner(nn.Module):
     def __init__(self, classnames, clip_model):
         super().__init__()
@@ -97,47 +98,51 @@ class PromptLearner(nn.Module):
             prompt_prefix = ctx_init
         else:
             # random initialization
-            if True:
+            if False:
                 print("Initializing class-specific contexts")
                 ctx_vectors = torch.empty(n_cls, n_ctx, ctx_dim, dtype=dtype)
             else:
                 print("Initializing a generic context")
                 ctx_vectors = torch.empty(self.N, n_ctx, ctx_dim, dtype=dtype)
-            nn.init.normal_(ctx_vectors, std=0.02)   # define the prompt to be trained
-            prompt_prefix = " ".join(["X"] * n_ctx)    
+                print('ctx_vectors: ', ctx_vectors.shape)
+            
+            nn.init.normal_(ctx_vectors, std=0.02)
+            prompt_prefix = " ".join(["X"] * n_ctx)
+            ctx_vectors = torch.cat([torch.roll(ctx_vectors, shifts=1, dims=1) for i in range(n_ctx)], dim = 0)
+            print('ctx_vectors: ', ctx_vectors.shape)
 
         print(f'Initial context: "{prompt_prefix}"')
         print(f"Number of context words (tokens): {n_ctx}")
 
-        self.ctx = nn.Parameter(ctx_vectors)  # to be optimized
+        self.ctx = nn.Parameter(ctx_vectors)
 
         classnames = [name.replace("_", " ") for name in classnames]   
         name_lens = [len(_tokenizer.encode(name)) for name in classnames]
         prompts = [prompt_prefix + " " + name + "." for name in classnames]
+        print(prompts)
 
-        tokenized_prompts = torch.cat([clip.tokenize(p) for p in prompts]) # (10, 77)
-        tokenized_prompts = tokenized_prompts.repeat(self.N,1) 
+        tokenized_prompts = torch.cat([clip.tokenize(p) for p in prompts]) 
+        print(tokenized_prompts.shape)
+        tokenized_prompts = tokenized_prompts.repeat(n_ctx, 1) 
+        print('token prompts:', tokenized_prompts.shape)
 
 
         with torch.no_grad():
             embedding = clip_model.token_embedding(tokenized_prompts).type(dtype) 
         print('tokenized prompts:', embedding.shape, 'ctx: ', self.ctx.shape)
 
-        # These token vectors will be saved when in save_model(),
-        # but they should be ignored in load_model() as we want to use
-        # those computed using the current class names
-        self.register_buffer("token_prefix", embedding[:, :1, :])  # SOS
-        self.register_buffer("token_suffix", embedding[:, 1 + n_ctx :, :])  # CLS, EOS
+
+        self.register_buffer("token_prefix", embedding[:, :1, :]) 
+        self.register_buffer("token_suffix", embedding[:, 1 + n_ctx :, :]) 
 
         self.n_cls = n_cls
         self.n_ctx = n_ctx
         self.tokenized_prompts = tokenized_prompts  # torch.Tensor
         self.name_lens = name_lens
-        self.class_token_position = 'middle'
+        self.class_token_position = 'end'
 
     def _ctx_shuffle(self, prefix, suffix, ctx, cls_loc = 'end', shuffleCLS = False):
 
-        # shuffle the ctx along 2nd dimension
         rand_idx = torch.randperm(ctx.shape[1])
         shuffled_ctx = ctx[:, rand_idx, :]
         return shuffled_ctx
@@ -147,21 +152,20 @@ class PromptLearner(nn.Module):
         
         ctx = self.ctx
         if ctx.dim() == 3:
-            ctx = ctx.unsqueeze(0)
+            ctx = ctx.unsqueeze(0).expand(self.n_cls, -1, -1,-1)
+        ctx = ctx.permute(1, 0, 2, 3)
 
-        ctx = ctx.contiguous().view(self.N*self.n_cls,self.n_ctx,ctx.shape[3])
-
+        ctx = ctx.contiguous().view(self.n_ctx*self.n_cls, self.n_ctx, ctx.shape[3])
         prefix = self.token_prefix
         suffix = self.token_suffix
 
-        ctx = self._ctx_shuffle(prefix, suffix, ctx)
 
         if self.class_token_position == "end":
             prompts = torch.cat(
                 [
-                    prefix,  # (n_cls, 1, dim)
-                    ctx,     # (n_cls, n_ctx, dim)
-                    suffix,  # (n_cls, *, dim)
+                    prefix,  
+                    ctx,     
+                    suffix,  
                 ],
                 dim=1,
             )
@@ -178,11 +182,11 @@ class PromptLearner(nn.Module):
                 ctx_i_half2 = ctx[i : i + 1, half_n_ctx:, :]
                 prompt = torch.cat(
                     [
-                        prefix_i,     # (1, 1, dim)
-                        ctx_i_half1,  # (1, n_ctx//2, dim)
-                        class_i,      # (1, name_len, dim)
-                        ctx_i_half2,  # (1, n_ctx//2, dim)
-                        suffix_i,     # (1, *, dim)
+                        prefix_i,     
+                        ctx_i_half1,  
+                        class_i,      
+                        ctx_i_half2,  
+                        suffix_i,     
                     ],
                     dim=1,
                 )
@@ -199,10 +203,10 @@ class PromptLearner(nn.Module):
                 ctx_i = ctx[i : i + 1, :, :]
                 prompt = torch.cat(
                     [
-                        prefix_i,  # (1, 1, dim)
-                        class_i,   # (1, name_len, dim)
-                        ctx_i,     # (1, n_ctx, dim)
-                        suffix_i,  # (1, *, dim)
+                        prefix_i,  
+                        class_i,   
+                        ctx_i,     
+                        suffix_i,  
                     ],
                     dim=1,
                 )
@@ -211,6 +215,7 @@ class PromptLearner(nn.Module):
 
         else:
             raise ValueError
+
         return prompts
 
 
