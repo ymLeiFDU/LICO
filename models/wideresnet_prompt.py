@@ -164,22 +164,22 @@ class WideResNetPrompt(nn.Module):
         emb_temp = self.emb_temp
         emb_matrix = self._emb_SimMatrix(emb, temp = emb_temp, norm = True)
         
-
-        text_features = []
-        prompts = self.prompt_learner() # [100, 77, 512]
-        text_features = self.text_encoder(prompts, self.tokenized_prompts) # [100, 512]
+        prompts = self.prompt_learner() 
+        text_features = self.text_encoder(prompts, self.tokenized_prompts)
+        text_features_ot = text_features
+        text_features = text_features[targets]
 
 
         
         if args.language and mode == 'train':
             out = self.fc(out)
+            
+            text_features_w = self.mlp(text_features_ot)
+            text_features_w = text_features_w.view(text_features_w.shape[0], -1)
+            text_features_w = text_features_w.contiguous().view(6, 10, text_features_w.shape[1])  
+            text_features_w = text_features_w[:, targets, :].permute(1,0,2)
 
-            # prompt learning
-            
-            text_features_w = self.mlp(text_features)
-            text_features_w = text_features_w.view(text_features_w.shape[0], -1) # (100, 64)
-            text_features_w = text_features_w.expand(feature_maps.shape[0], text_features_w.shape[0], text_features_w.shape[1])
-            
+
             feature_maps = F.normalize(feature_maps, dim = 2)
             text_features_w = F.normalize(text_features_w, dim = 2)
             with torch.no_grad():
@@ -230,8 +230,3 @@ class build_WideResNet:
             is_remix=self.is_remix,
         )
 
-
-if __name__ == '__main__':
-    wrn_builder = build_WideResNet(1, 10, 2, 0.01, 0.1, 0.5)
-    wrn = wrn_builder.build(10)
-    print(wrn)
