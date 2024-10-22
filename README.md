@@ -8,6 +8,8 @@ Framework of LICO is shown in the following figure:
 Qualitative and quantitative results obtained by baselines and their LICO versions.
 ![schematic](figures/cams_and_curves.jpg)
 
+## Response to Reproducibility Study at TMLR
+
 ## References
 
 If you find the code useful for your research, please consider citing
